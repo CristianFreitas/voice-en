@@ -9,6 +9,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 namespace VoiceEn
 {
@@ -37,6 +38,29 @@ namespace VoiceEn
                         DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + message + Environment.NewLine);
                 }
                 catch (IOException) { }
+            }
+        }
+    }
+
+    static class Autostart
+    {
+        const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        const string ValueName = "VoiceEn";
+
+        public static bool Enabled
+        {
+            get
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(RunKey))
+                    return key != null && key.GetValue(ValueName) != null;
+            }
+            set
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(RunKey))
+                {
+                    if (value) key.SetValue(ValueName, "\"" + Application.ExecutablePath + "\"");
+                    else key.DeleteValue(ValueName, false);
+                }
             }
         }
     }
@@ -261,6 +285,7 @@ namespace VoiceEn
         readonly NotifyIcon tray = new NotifyIcon();
         readonly System.Windows.Forms.Timer hideTimer = new System.Windows.Forms.Timer();
         readonly System.Windows.Forms.Timer maxTimer = new System.Windows.Forms.Timer();
+        readonly System.Windows.Forms.Timer restoreTimer = new System.Windows.Forms.Timer();
         readonly Icon iconIdle = MakeIcon(Color.Gray);
         readonly Icon iconReady = MakeIcon(Color.MediumSeaGreen);
         readonly Icon iconRec = MakeIcon(Color.Crimson);
@@ -275,6 +300,8 @@ namespace VoiceEn
         State state = State.Idle;
         bool ready;
         bool exiting;
+        string lastText = "";
+        DataObject clipboardBackup;
         Stopwatch translateClock;
 
         public App(string selfTestWav)
@@ -288,11 +315,18 @@ namespace VoiceEn
             menuHeader = menu.Items.Add("VoiceEn  (" + hotkey + ")");
             menuHeader.Enabled = false;
             menu.Items.Add("Mudar atalho...", null, delegate { ChangeHotkey(); });
+            menu.Items.Add("Copiar ultima traducao", null, delegate { CopyLast(); });
+            ToolStripMenuItem autostart = new ToolStripMenuItem("Iniciar com o Windows");
+            autostart.Checked = Autostart.Enabled;
+            autostart.Click += delegate { Autostart.Enabled = !Autostart.Enabled; autostart.Checked = Autostart.Enabled; };
+            menu.Items.Add(autostart);
             menu.Items.Add("Sair", null, delegate { Quit(); });
             tray.ContextMenuStrip = menu;
             tray.Visible = selfTestWav == null;
 
             hideTimer.Tick += delegate { hideTimer.Stop(); overlay.Hide(); };
+            restoreTimer.Interval = 800; // tempo para a janela em foco consumir o Ctrl+V
+            restoreTimer.Tick += delegate { restoreTimer.Stop(); RestoreClipboard(); };
             maxTimer.Interval = Config.MaxSeconds * 1000;
             maxTimer.Tick += delegate { if (state == State.Recording) StopRecording(); };
 
@@ -425,6 +459,7 @@ namespace VoiceEn
                 Log.Write("traduzido em " + elapsed + ": " + text);
                 if (selfTestWav != null) { Quit(); return; }
                 if (text.Length == 0) { Flash("Nenhuma fala detectada", Color.Khaki, 2000); return; }
+                lastText = text;
                 Paste(text);
                 overlay.Hide();
             }
@@ -514,8 +549,11 @@ namespace VoiceEn
 
         // ---- saida ----
 
+        // Cola via area de transferencia e depois devolve o que o usuario tinha copiado antes.
         void Paste(string text)
         {
+            restoreTimer.Stop();
+            DataObject backup = clipboardBackup ?? BackupClipboard();
             try
             {
                 Clipboard.SetDataObject(text, true, 10, 100);
@@ -523,9 +561,53 @@ namespace VoiceEn
             }
             catch (Exception err)
             {
+                clipboardBackup = null;
                 Log.Write("falha ao colar: " + err.Message);
                 Flash("Texto copiado; cole com Ctrl+V", Color.Khaki, 3000);
+                return;
             }
+            clipboardBackup = backup;
+            if (backup != null) restoreTimer.Start();
+        }
+
+        static DataObject BackupClipboard()
+        {
+            try
+            {
+                IDataObject current = Clipboard.GetDataObject();
+                if (current == null) return null;
+                DataObject copy = new DataObject();
+                bool any = false;
+                foreach (string format in current.GetFormats(false))
+                {
+                    try
+                    {
+                        object data = current.GetData(format, false);
+                        if (data != null) { copy.SetData(format, data); any = true; }
+                    }
+                    catch (Exception) { } // formato que o dono da area de transferencia nao entrega mais
+                }
+                return any ? copy : null;
+            }
+            catch (Exception) { return null; }
+        }
+
+        void RestoreClipboard()
+        {
+            DataObject backup = clipboardBackup;
+            clipboardBackup = null;
+            if (backup == null) return;
+            try { Clipboard.SetDataObject(backup, true, 10, 100); }
+            catch (Exception err) { Log.Write("falha ao restaurar a area de transferencia: " + err.Message); }
+        }
+
+        void CopyLast()
+        {
+            if (lastText.Length == 0) { Flash("Ainda nao ha traducao nesta sessao", Color.Khaki, 2000); return; }
+            restoreTimer.Stop();
+            clipboardBackup = null;
+            try { Clipboard.SetDataObject(lastText, true, 10, 100); Flash("Ultima traducao copiada", Color.MediumSeaGreen, 1500); }
+            catch (Exception err) { Log.Write("falha ao copiar: " + err.Message); }
         }
 
         void Quit()

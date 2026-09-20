@@ -57,6 +57,10 @@ Botão direito no ícone da bandeja → **Mudar atalho...** → aperte a combina
 Vale qualquer combinação com Ctrl ou Alt, ou uma tecla de função sozinha (F1–F24). A escolha fica
 salva em `%LOCALAPPDATA%\VoiceEn\hotkey.txt`.
 
+### Abrir junto com o Windows
+
+Botão direito no ícone da bandeja → **Iniciar com o Windows**.
+
 ### Modo terminal (opcional)
 
 `voice-en` sem argumentos grava, imprime a tradução e copia para a área de transferência.
@@ -80,6 +84,7 @@ Os modelos `turbo` do Whisper não servem aqui: eles não foram treinados para t
 O log fica em `%LOCALAPPDATA%\VoiceEn\voice-en.log`.
 
 - **"atalho já está em uso"** — outro programa registrou a combinação; troque pelo menu da bandeja.
-- **Nada é colado** — o texto traduzido continua na área de transferência; cole com Ctrl+V.
+- **Nada é colado** — botão direito no ícone → **Copiar última tradução** e cole com Ctrl+V.
+  (Depois de colar, o aplicativo devolve à área de transferência o que você tinha copiado antes.)
 - **Microfone errado** — a gravação usa o dispositivo de entrada padrão do Windows
   (Configurações → Sistema → Som → Entrada).
