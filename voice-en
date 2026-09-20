@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# voice-en: fala em portugues -> texto em ingles.
+#   voice-en <arquivo>   modo "editor" (Ctrl+G no Claude Code): acrescenta a traducao ao arquivo
+#   voice-en             imprime a traducao e copia para a area de transferencia do Windows
+set -u
+here="$(dirname "$(readlink -f "$0")")"
+target="${1:-}"
+
+# EDITOR tambem e usado por git & cia; nesses casos abre um editor de verdade.
+if [ -n "$target" ] && [[ "$target" == */.git/* ]]; then
+  exec "${VOICE_EN_FALLBACK_EDITOR:-nano}" "$@"
+fi
+
+wintmp="$(cd /mnt/c && cmd.exe /c 'echo %TEMP%' 2>/dev/null | tr -d '\r')"
+wav_win="${wintmp}\\voice-en-$$.wav"
+wav="$(wslpath -u "$wav_win")"
+trap 'rm -f "$wav"' EXIT
+
+printf '\033[36m[voice-en]\033[0m preparando microfone...\n' >&2
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w "$here/rec.ps1")" -OutFile "$wav_win" >&2 || {
+  printf '\033[31m[voice-en]\033[0m falha ao gravar\n' >&2; sleep 2; exit 1; }
+
+# menos de ~0,5 s de audio (16 kHz, 16 bit): nada a traduzir
+if [ ! -s "$wav" ] || [ "$(stat -c %s "$wav")" -lt 16000 ]; then
+  printf '\033[33m[voice-en]\033[0m gravacao vazia, nada inserido\n' >&2; sleep 1; exit 0
+fi
+
+printf '\033[36m[voice-en]\033[0m traduzindo para ingles...\n' >&2
+text="$("$here/.venv/bin/python" "$here/translate.py" "$wav")" || {
+  printf '\033[31m[voice-en]\033[0m falha na traducao\n' >&2; sleep 2; exit 1; }
+
+if [ -z "$text" ]; then
+  printf '\033[33m[voice-en]\033[0m nenhuma fala detectada\n' >&2; sleep 1; exit 0
+fi
+
+if [ -n "$target" ]; then
+  # preserva o que ja estava digitado no prompt
+  if [ -s "$target" ]; then
+    existing="$(cat "$target")"
+    printf '%s %s' "${existing%$'\n'}" "$text" > "$target"
+  else
+    printf '%s' "$text" > "$target"
+  fi
+else
+  printf '%s\n' "$text"
+  printf '%s' "$text" | clip.exe
+fi
