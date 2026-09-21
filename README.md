@@ -4,64 +4,103 @@
 
 Fale em português, receba o texto em inglês — em qualquer programa do Windows.
 
-Um atalho global grava o microfone, o [Whisper](https://github.com/SYSTRAN/faster-whisper) traduz
-localmente (tarefa `translate`, PT → EN) e o texto é colado onde o cursor estiver: terminal, editor,
-navegador, chat. No modo padrão nada de áudio sai da máquina e não há custo por uso.
+Um atalho global grava o microfone, o Whisper traduz a fala (PT → EN) e o texto é colado onde o
+cursor estiver: terminal, editor, navegador, chat.
 
-## Como funciona
+| Modo | Tempo por frase | RAM | Para onde vai o áudio | Custo |
+|---|---|---|---|---|
+| **Nuvem** (Groq, `whisper-large-v3`) | ~0,6 s | ~20 MB | servidores da Groq | plano gratuito |
+| **Local** ([faster-whisper](https://github.com/SYSTRAN/faster-whisper) `medium`, CPU) | ~8–12 s | ~2 GB | não sai da máquina | nenhum |
 
-```
-Ctrl+Alt+Espaço ──> VoiceEn.exe (bandeja do Windows)
-                      │  grava o microfone (MCI, 16 kHz mono)
-                      ▼
-                    server.py (WSL2) ── Whisper "medium", modelo sempre em memória
-                      │  texto em inglês
-                      ▼
-                    Ctrl+V na janela em foco
-```
+Tempos medidos com uma frase de 18 segundos. O modo é escolhido pela presença de uma chave da Groq;
+com a chave, o local vira plano B automático quando a nuvem falha.
 
-- `VoiceEn.cs` — aplicativo de bandeja: atalho global, gravação, aviso na tela, colagem. É compilado
-  com o `csc.exe` que já vem no Windows, então não precisa instalar nada do lado do Windows.
-- `server.py` / `translate.py` — servidor de tradução que roda no WSL e mantém o modelo carregado.
-- `voice-en` + `rec.ps1` — modo alternativo só para terminal (veja abaixo).
+## Guia rápido
 
-## Requisitos
+### 1. Instalar
 
-- Windows 10/11 com WSL2 (testado com Ubuntu 24.04)
-- ~2 GB de disco para o modelo e ~2 GB de RAM enquanto o aplicativo está aberto
-- Internet apenas na instalação (download do modelo)
-
-## Instalação
+Requisitos: Windows 10/11 com WSL2 (testado com Ubuntu 24.04). Nada precisa ser instalado do lado
+do Windows — o aplicativo é compilado com o `csc.exe` que já vem nele.
 
 Dentro do WSL:
 
 ```bash
-git clone <url-deste-repo> ~/.local/share/voice-en
+git clone git@github.com:CristianFreitas/voice-en.git ~/.local/share/voice-en
 cd ~/.local/share/voice-en
-./install.sh
+./install.sh              # completo: baixa também o modelo local (~1,5 GB)
+./install.sh --no-model   # só nuvem: instalação leve, sem baixar o modelo
 ```
 
-O script cria o ambiente Python, baixa o modelo e compila o `VoiceEn.exe` em
-`%LOCALAPPDATA%\VoiceEn\`. Depois é só abrir o `VoiceEn.exe`.
+O script cria o ambiente Python e compila o `VoiceEn.exe` em `%LOCALAPPDATA%\VoiceEn\`.
 
-## Uso
+### 2. Ligar o modo nuvem (recomendado)
 
-1. Clique no campo onde quer o texto.
-2. Aperte **Ctrl+Alt+Espaço** e fale em português.
-3. Aperte o atalho de novo para terminar. Em alguns segundos o texto em inglês é colado.
+Crie uma chave gratuita em [console.groq.com/keys](https://console.groq.com/keys) e salve-a:
 
-O ícone na bandeja mostra o estado: verde (pronto), vermelho (gravando), amarelo (traduzindo).
-A gravação para sozinha após 2 minutos.
+```bash
+mkdir -p ~/.config/voice-en && chmod 700 ~/.config/voice-en
+nano ~/.config/voice-en/groq-key      # cole a chave e salve
+chmod 600 ~/.config/voice-en/groq-key
+```
 
-### Trocar o atalho
+A chave é relida a cada gravação: trocar (rotacionar) ou apagar o arquivo vale na hora, sem
+reiniciar o aplicativo. Ela fica fora do repositório; nunca a coloque em arquivos versionados.
 
-Botão direito no ícone da bandeja → **Mudar atalho...** → aperte a combinação desejada → Enter.
-Vale qualquer combinação com Ctrl ou Alt, ou uma tecla de função sozinha (F1–F24). A escolha fica
-salva em `%LOCALAPPDATA%\VoiceEn\hotkey.txt`.
+### 3. Usar
 
-### Abrir junto com o Windows
+1. Abra o `VoiceEn.exe`. Um círculo verde aparece na bandeja, perto do relógio.
+2. Clique no campo onde quer o texto.
+3. Aperte **Ctrl+Alt+Espaço** e fale em português.
+4. Aperte o atalho de novo para terminar. O texto em inglês é colado no lugar do cursor.
 
-Botão direito no ícone da bandeja → **Iniciar com o Windows**.
+O ícone mostra o estado: verde (pronto), vermelho (gravando), amarelo (traduzindo). A gravação para
+sozinha após 2 minutos. Depois de colar, o aplicativo devolve à área de transferência o que você
+tinha copiado antes.
+
+Menu do ícone (botão direito):
+
+| Opção | O que faz |
+|---|---|
+| **Mudar atalho...** | Aperte a nova combinação e confirme com Enter. Vale qualquer combinação com Ctrl ou Alt, ou uma tecla de função sozinha (F1–F24). Fica salvo em `%LOCALAPPDATA%\VoiceEn\hotkey.txt`. |
+| **Copiar última tradução** | Para quando a colagem não pegou na janela. |
+| **Iniciar com o Windows** | Abre o aplicativo no login. |
+| **Sair** | Fecha o aplicativo e o servidor de tradução. |
+
+### 4. Conferir qual modo foi usado
+
+O log em `%LOCALAPPDATA%\VoiceEn\voice-en.log` registra cada tradução e o caminho que ela tomou:
+
+```
+[servidor] groq 0.6s
+traduzido em 0.7s: Refactor the authentication ...
+```
+
+`groq` é a nuvem; `local` é o modelo na máquina. Uma linha `nuvem falhou (...)` antes de um `local`
+mostra o motivo do plano B (sem internet, chave inválida, limite do plano gratuito).
+
+## Como funciona
+
+```
+atalho global ──> VoiceEn.exe (bandeja do Windows)
+                    │  grava o microfone padrão (MCI, 16 kHz mono)
+                    ▼
+                  server.py (WSL2)
+                    ├─ com chave: envia o áudio à Groq (audio/translations)
+                    └─ sem chave ou em falha: Whisper local, modelo mantido em memória
+                    │  texto em inglês
+                    ▼
+                  Ctrl+V na janela em foco
+```
+
+- `VoiceEn.cs` — aplicativo de bandeja: atalho global, gravação, aviso na tela, colagem.
+- `server.py` / `translate.py` — servidor de tradução (nuvem e local) que roda no WSL.
+- `voice-en` + `rec.ps1` — modo alternativo só para terminal (abaixo).
+- `make_icon.py` — desenha o ícone (`uv run --with pillow python make_icon.py`).
+
+### Privacidade
+
+No modo nuvem, o **áudio de cada gravação é enviado à Groq** para ser traduzido. No modo local nada
+sai da máquina. Para voltar ao local, apague `~/.config/voice-en/groq-key`.
 
 ### Modo terminal (opcional)
 
@@ -69,25 +108,7 @@ Botão direito no ícone da bandeja → **Iniciar com o Windows**.
 Usado como `EDITOR` (`voice-en <arquivo>`), acrescenta a tradução ao arquivo — no Claude Code isso
 transforma o Ctrl+G em "ditar para o prompt".
 
-## Modo nuvem (opcional, bem mais rápido)
-
-Por padrão tudo roda local: nenhum áudio sai da máquina, ao custo de ~8 s por frase na CPU e ~2 GB
-de RAM. Com uma chave gratuita da [Groq](https://console.groq.com/keys) a tradução passa a ser feita
-na nuvem pelo `whisper-large-v3` (modelo maior que o local), em cerca de 1 s, e o aplicativo deixa
-de carregar o modelo na memória.
-
-```bash
-mkdir -p ~/.config/voice-en
-nano ~/.config/voice-en/groq-key      # cole a chave e salve
-chmod 600 ~/.config/voice-en/groq-key
-```
-
-Vale a partir da próxima gravação, sem reiniciar. Se a nuvem falhar (sem internet, limite
-excedido), a tradução cai sozinha para o modelo local. Para voltar ao modo 100% local, apague o
-arquivo. No modo nuvem o **áudio gravado é enviado à Groq**; o plano gratuito tem limite de
-requisições por dia, folgado para ditado.
-
-## Ajustes
+## Ajustes do modo local
 
 Variáveis de ambiente lidas por `translate.py`:
 
@@ -96,15 +117,17 @@ Variáveis de ambiente lidas por `translate.py`:
 | `VOICE_EN_MODEL` | `medium` | Modelo do Whisper. `small` é ~2x mais rápido e erra mais. |
 | `VOICE_EN_LANG` | `pt` | Idioma falado. |
 | `VOICE_EN_DEVICE` | `cpu` | `cuda` exige as bibliotecas cuBLAS/cuDNN e uma GPU livre. |
+| `VOICE_EN_GROQ_KEY` | — | Alternativa ao arquivo `groq-key`. |
 
-Os modelos `turbo` do Whisper não servem aqui: eles não foram treinados para traduzir.
+Os modelos `turbo` do Whisper não servem aqui, nem local nem na nuvem: eles não foram treinados
+para traduzir.
 
 ## Solução de problemas
 
-O log fica em `%LOCALAPPDATA%\VoiceEn\voice-en.log`.
-
 - **"atalho já está em uso"** — outro programa registrou a combinação; troque pelo menu da bandeja.
-- **Nada é colado** — botão direito no ícone → **Copiar última tradução** e cole com Ctrl+V.
-  (Depois de colar, o aplicativo devolve à área de transferência o que você tinha copiado antes.)
+- **Nada é colado** — use **Copiar última tradução** no menu e cole com Ctrl+V.
+- **Ficou lento de repente** — a nuvem falhou e o plano B local assumiu; o log diz o motivo.
 - **Microfone errado** — a gravação usa o dispositivo de entrada padrão do Windows
   (Configurações → Sistema → Som → Entrada).
+- **Mudou o código do servidor** — feche o aplicativo (**Sair**) e abra de novo; o `server.py` só é
+  recarregado quando o aplicativo inicia.

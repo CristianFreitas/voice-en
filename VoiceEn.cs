@@ -444,7 +444,7 @@ namespace VoiceEn
                 ready = true;
                 tray.Icon = iconReady;
                 tray.Text = "VoiceEn pronto: " + hotkey;
-                Log.Write("modelo carregado");
+                Log.Write("servidor de traducao pronto");
                 if (selfTestWav != null) SendToServer(selfTestWav);
                 else Flash("VoiceEn pronto  -  " + hotkey + " para falar", Color.MediumSeaGreen, 2500);
                 return;

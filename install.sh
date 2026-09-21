@@ -20,8 +20,12 @@ echo ">> criando o ambiente Python"
 [ -d .venv ] || "$uv" venv --python 3.12 .venv
 "$uv" pip install --python .venv/bin/python -r requirements.txt
 
-echo ">> baixando o modelo de traducao (~1,5 GB na primeira vez)"
-.venv/bin/python -c "from translate import load_model; load_model()"
+if [ "${1:-}" = "--no-model" ]; then
+  echo ">> modelo local nao baixado (--no-model); ele sera baixado se a nuvem falhar algum dia"
+else
+  echo ">> baixando o modelo de traducao (~1,5 GB na primeira vez)"
+  .venv/bin/python -c "from translate import load_model; load_model()"
+fi
 
 echo ">> compilando o VoiceEn.exe"
 chmod +x build.sh voice-en
@@ -29,3 +33,4 @@ chmod +x build.sh voice-en
 
 echo
 echo "Pronto. Abra o VoiceEn.exe (caminho acima) e use Ctrl+Alt+Espaco para falar."
+echo "Para o modo nuvem (~1 s por frase), veja a secao \"Modo nuvem\" do README."
