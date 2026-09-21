@@ -6,7 +6,7 @@ Fale em português, receba o texto em inglês — em qualquer programa do Window
 
 Um atalho global grava o microfone, o [Whisper](https://github.com/SYSTRAN/faster-whisper) traduz
 localmente (tarefa `translate`, PT → EN) e o texto é colado onde o cursor estiver: terminal, editor,
-navegador, chat. Nada de áudio sai da máquina e não há custo por uso.
+navegador, chat. No modo padrão nada de áudio sai da máquina e não há custo por uso.
 
 ## Como funciona
 
@@ -68,6 +68,24 @@ Botão direito no ícone da bandeja → **Iniciar com o Windows**.
 `voice-en` sem argumentos grava, imprime a tradução e copia para a área de transferência.
 Usado como `EDITOR` (`voice-en <arquivo>`), acrescenta a tradução ao arquivo — no Claude Code isso
 transforma o Ctrl+G em "ditar para o prompt".
+
+## Modo nuvem (opcional, bem mais rápido)
+
+Por padrão tudo roda local: nenhum áudio sai da máquina, ao custo de ~8 s por frase na CPU e ~2 GB
+de RAM. Com uma chave gratuita da [Groq](https://console.groq.com/keys) a tradução passa a ser feita
+na nuvem pelo `whisper-large-v3` (modelo maior que o local), em cerca de 1 s, e o aplicativo deixa
+de carregar o modelo na memória.
+
+```bash
+mkdir -p ~/.config/voice-en
+nano ~/.config/voice-en/groq-key      # cole a chave e salve
+chmod 600 ~/.config/voice-en/groq-key
+```
+
+Vale a partir da próxima gravação, sem reiniciar. Se a nuvem falhar (sem internet, limite
+excedido), a tradução cai sozinha para o modelo local. Para voltar ao modo 100% local, apague o
+arquivo. No modo nuvem o **áudio gravado é enviado à Groq**; o plano gratuito tem limite de
+requisições por dia, folgado para ditado.
 
 ## Ajustes
 
