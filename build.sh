@@ -13,7 +13,8 @@ mkdir -p "$dest"
 taskkill.exe /IM VoiceEn.exe /F >/dev/null 2>&1 || true
 
 sed -e "s|@DISTRO@|${WSL_DISTRO_NAME}|" -e "s|@ROOT@|${here}|" "$here/VoiceEn.cs" > "$dest/VoiceEn.cs"
+cp "$here/icon.ico" "$dest/icon.ico"
 cd "$dest"
-"$csc" /nologo /codepage:65001 /target:winexe /optimize+ /out:VoiceEn.exe \
+"$csc" /nologo /codepage:65001 /target:winexe /optimize+ /out:VoiceEn.exe /win32icon:icon.ico \
   /r:System.Windows.Forms.dll /r:System.Drawing.dll VoiceEn.cs
 echo "ok: ${dest_win}\\VoiceEn.exe"

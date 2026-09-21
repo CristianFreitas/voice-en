@@ -1,3 +1,5 @@
+<img src="icon.png" width="96" align="right" alt="icone do VoiceEn">
+
 # voice-en
 
 Fale em português, receba o texto em inglês — em qualquer programa do Windows.

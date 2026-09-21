@@ -169,6 +169,7 @@ namespace VoiceEn
         {
             this.current = current.ToString();
             Text = "VoiceEn - escolher atalho";
+            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
