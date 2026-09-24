@@ -61,6 +61,7 @@ Menu do ícone (botão direito):
 
 | Opção | O que faz |
 |---|---|
+| **Idioma** | Português → Inglês (tradução, o padrão), Português → Português ou Inglês → Inglês (só transcrição). Fica salvo em `%LOCALAPPDATA%\VoiceEn\mode.txt`. |
 | **Mudar atalho...** | Aperte a nova combinação e confirme com Enter. Vale qualquer combinação com Ctrl ou Alt, ou uma tecla de função sozinha (F1–F24). Fica salvo em `%LOCALAPPDATA%\VoiceEn\hotkey.txt`. |
 | **Copiar última tradução** | Para quando a colagem não pegou na janela. |
 | **Iniciar com o Windows** | Abre o aplicativo no login. |
@@ -71,7 +72,7 @@ Menu do ícone (botão direito):
 O log em `%LOCALAPPDATA%\VoiceEn\voice-en.log` registra cada tradução e o caminho que ela tomou:
 
 ```
-[servidor] groq 0.6s
+[servidor] groq pt-en 0.6s
 traduzido em 0.7s: Refactor the authentication ...
 ```
 
@@ -115,7 +116,6 @@ Variáveis de ambiente lidas por `translate.py`:
 | Variável | Padrão | Descrição |
 |---|---|---|
 | `VOICE_EN_MODEL` | `medium` | Modelo do Whisper. `small` é ~2x mais rápido e erra mais. |
-| `VOICE_EN_LANG` | `pt` | Idioma falado. |
 | `VOICE_EN_DEVICE` | `cpu` | `cuda` exige as bibliotecas cuBLAS/cuDNN e uma GPU livre. |
 | `VOICE_EN_GROQ_KEY` | — | Alternativa ao arquivo `groq-key`. |
 

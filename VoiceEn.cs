@@ -65,6 +65,45 @@ namespace VoiceEn
         }
     }
 
+    // Idioma falado e idioma do texto, salvo em %LOCALAPPDATA%\VoiceEn\mode.txt.
+    // Os codigos sao os do server.py (translate.MODES).
+    static class Mode
+    {
+        public static readonly string[] Codes = { "pt-en", "pt-pt", "en-en" };
+        public const string Default = "pt-en";
+
+        static string FilePath { get { return Path.Combine(Log.Dir, "mode.txt"); } }
+
+        public static string Label(string code)
+        {
+            switch (code)
+            {
+                case "pt-pt": return "Portugues -> Portugues";
+                case "en-en": return "Ingles -> Ingles";
+                default: return "Portugues -> Ingles";
+            }
+        }
+
+        public static string Short(string code) { return code.ToUpperInvariant().Replace("-", " > "); }
+
+        public static string Load()
+        {
+            try
+            {
+                string code = File.ReadAllText(FilePath).Trim();
+                if (Array.IndexOf(Codes, code) >= 0) return code;
+            }
+            catch (Exception) { }
+            return Default;
+        }
+
+        public static void Save(string code)
+        {
+            try { Directory.CreateDirectory(Log.Dir); File.WriteAllText(FilePath, code); }
+            catch (Exception err) { Log.Write("falha ao salvar o modo: " + err.Message); }
+        }
+    }
+
     // Atalho global escolhido pelo usuario, salvo em %LOCALAPPDATA%\VoiceEn\hotkey.txt (ex.: "Ctrl+Alt+Space").
     class Hotkey
     {
@@ -301,6 +340,7 @@ namespace VoiceEn
         readonly ToolStripItem menuHeader;
 
         Hotkey hotkey = Hotkey.Load();
+        string mode = Mode.Load();
         Process server;
         State state = State.Idle;
         bool ready;
@@ -317,8 +357,18 @@ namespace VoiceEn
             tray.Icon = iconIdle;
             tray.Text = "VoiceEn: carregando modelo...";
             ContextMenuStrip menu = new ContextMenuStrip();
-            menuHeader = menu.Items.Add("VoiceEn  (" + hotkey + ")");
+            menuHeader = menu.Items.Add(HeaderText());
             menuHeader.Enabled = false;
+            ToolStripMenuItem modeMenu = new ToolStripMenuItem("Idioma");
+            foreach (string code in Mode.Codes)
+            {
+                ToolStripMenuItem item = new ToolStripMenuItem(Mode.Label(code));
+                item.Tag = code;
+                item.Checked = code == mode;
+                item.Click += delegate(object sender, EventArgs e) { ChangeMode((string)((ToolStripItem)sender).Tag, modeMenu); };
+                modeMenu.DropDownItems.Add(item);
+            }
+            menu.Items.Add(modeMenu);
             menu.Items.Add("Mudar atalho...", null, delegate { ChangeHotkey(); });
             menu.Items.Add("Copiar ultima traducao", null, delegate { CopyLast(); });
             ToolStripMenuItem autostart = new ToolStripMenuItem("Iniciar com o Windows");
@@ -370,7 +420,7 @@ namespace VoiceEn
                     {
                         hotkey = dialog.Result;
                         hotkey.Save();
-                        menuHeader.Text = "VoiceEn  (" + hotkey + ")";
+                        menuHeader.Text = HeaderText();
                         if (ready) tray.Text = "VoiceEn pronto: " + hotkey;
                         Log.Write("atalho alterado: " + hotkey);
                         Flash("Novo atalho: " + hotkey, Color.MediumSeaGreen, 2500);
@@ -394,6 +444,18 @@ namespace VoiceEn
                 g.FillEllipse(brush, 1, 1, 14, 14);
             }
             return Icon.FromHandle(bmp.GetHicon());
+        }
+
+        string HeaderText() { return "VoiceEn  (" + hotkey + ", " + Mode.Short(mode) + ")"; }
+
+        void ChangeMode(string code, ToolStripMenuItem modeMenu)
+        {
+            mode = code;
+            Mode.Save(code);
+            foreach (ToolStripMenuItem item in modeMenu.DropDownItems) item.Checked = (string)item.Tag == code;
+            menuHeader.Text = HeaderText();
+            Log.Write("modo alterado: " + code);
+            Flash("Idioma: " + Mode.Label(code), Color.MediumSeaGreen, 2000);
         }
 
         void Flash(string text, Color color, int ms)
@@ -493,7 +555,7 @@ namespace VoiceEn
             string linux = "/mnt/" + char.ToLowerInvariant(full[0]) + full.Substring(2).Replace('\\', '/');
             state = State.Translating;
             translateClock = Stopwatch.StartNew();
-            server.StandardInput.WriteLine(linux);
+            server.StandardInput.WriteLine(mode + "\t" + linux);
             server.StandardInput.Flush();
         }
 
@@ -532,7 +594,7 @@ namespace VoiceEn
             state = State.Recording;
             tray.Icon = iconRec;
             maxTimer.Start();
-            Flash("●  Gravando...  " + hotkey + " para terminar", Color.Tomato, 0);
+            Flash("●  Gravando (" + Mode.Short(mode) + ")...  " + hotkey + " para terminar", Color.Tomato, 0);
         }
 
         void StopRecording()
@@ -548,7 +610,7 @@ namespace VoiceEn
             if (new FileInfo(wavPath).Length < 16000) { Flash("Gravacao muito curta", Color.Khaki, 1500); return; }
 
             tray.Icon = iconBusy;
-            Flash("Traduzindo para ingles...", Color.Gold, 0);
+            Flash(mode == "pt-en" ? "Traduzindo para ingles..." : "Transcrevendo...", Color.Gold, 0);
             SendToServer(wavPath);
         }
 
