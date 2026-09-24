@@ -281,6 +281,10 @@ namespace VoiceEn
         static extern int mciSendString(string command, StringBuilder ret, int retLen, IntPtr callback);
         [DllImport("winmm.dll", CharSet = CharSet.Unicode)]
         static extern bool mciGetErrorString(int err, StringBuilder text, int len);
+        [DllImport("user32.dll")]
+        static extern IntPtr GetOpenClipboardWindow();
+        [DllImport("user32.dll")]
+        static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 
         readonly Overlay overlay = new Overlay();
         readonly NotifyIcon tray = new NotifyIcon();
@@ -555,11 +559,13 @@ namespace VoiceEn
         {
             restoreTimer.Stop();
             DataObject backup = clipboardBackup ?? BackupClipboard();
-            try
+            if (!PutOnClipboard(text))
             {
-                Clipboard.SetDataObject(text, true, 10, 100);
-                SendKeys.SendWait("^v");
+                clipboardBackup = null;
+                Flash("Nao consegui copiar; use Copiar ultima traducao", Color.Salmon, 4000);
+                return;
             }
+            try { SendKeys.SendWait("^v"); }
             catch (Exception err)
             {
                 clipboardBackup = null;
@@ -569,6 +575,50 @@ namespace VoiceEn
             }
             clipboardBackup = backup;
             if (backup != null) restoreTimer.Start();
+        }
+
+        // Outro programa pode estar com a area de transferencia aberta (historico do Win+V,
+        // terminal); o SetDataObject as vezes lanca excecao depois de ja ter gravado o texto,
+        // entao confere o conteudo antes de desistir de colar.
+        static bool PutOnClipboard(string text)
+        {
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                try { Clipboard.SetDataObject(text, true, 10, 100); return true; }
+                catch (Exception err)
+                {
+                    if (ClipboardHas(text))
+                    {
+                        Log.Write("area de transferencia reclamou mas recebeu o texto: " + err.Message);
+                        return true;
+                    }
+                    Log.Write("area de transferencia ocupada por " + ClipboardHolder() + ": " + err.Message);
+                }
+            }
+            return false;
+        }
+
+        static bool ClipboardHas(string text)
+        {
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                try { return Clipboard.ContainsText() && Clipboard.GetText() == text; }
+                catch (Exception) { Thread.Sleep(100); }
+            }
+            return false;
+        }
+
+        static string ClipboardHolder()
+        {
+            try
+            {
+                IntPtr hwnd = GetOpenClipboardWindow();
+                if (hwnd == IntPtr.Zero) return "ninguem";
+                uint pid;
+                GetWindowThreadProcessId(hwnd, out pid);
+                return Process.GetProcessById((int)pid).ProcessName + " (pid " + pid + ")";
+            }
+            catch (Exception) { return "?"; }
         }
 
         static DataObject BackupClipboard()
