@@ -51,11 +51,18 @@ reiniciar o aplicativo. Ela fica fora do repositório; nunca a coloque em arquiv
 1. Abra o `VoiceEn.exe`. Um círculo verde aparece na bandeja, perto do relógio.
 2. Clique no campo onde quer o texto.
 3. Aperte **Ctrl+Alt+Espaço** e fale em português.
-4. Aperte o atalho de novo para terminar. O texto em inglês é colado no lugar do cursor.
+4. Aperte o atalho de novo para terminar. O texto em inglês é digitado no lugar do cursor.
 
-O ícone mostra o estado: verde (pronto), vermelho (gravando), amarelo (traduzindo). A gravação para
-sozinha após 2 minutos. Depois de colar, o aplicativo devolve à área de transferência o que você
-tinha copiado antes.
+O ícone mostra o estado: verde (pronto), vermelho (gravando), amarelo (traduzindo), cinza
+(servidor iniciando). A gravação para sozinha após 2 minutos.
+
+O texto é digitado, não colado: assim a área de transferência fica intacta e programas que resumem
+colagens longas (o Claude Code troca mais de 800 caracteres colados por `[Pasted text #N]`) recebem
+o texto inteiro. Se algum programa não aceitar a digitação, ligue **Colar com Ctrl+V** no menu.
+
+Se o servidor de tradução cair (o WSL encerra na suspensão do Windows ou num `wsl --shutdown`), o
+aplicativo sobe outro sozinho e, se havia uma tradução em andamento, reenvia a gravação. Uma
+tradução que fica sem resposta é abandonada e o servidor é reiniciado.
 
 Menu do ícone (botão direito):
 
@@ -63,7 +70,9 @@ Menu do ícone (botão direito):
 |---|---|
 | **Idioma** | Português → Inglês (tradução, o padrão), Português → Português ou Inglês → Inglês (só transcrição). Fica salvo em `%LOCALAPPDATA%\VoiceEn\mode.txt`. |
 | **Mudar atalho...** | Aperte a nova combinação e confirme com Enter. Vale qualquer combinação com Ctrl ou Alt, ou uma tecla de função sozinha (F1–F24). Fica salvo em `%LOCALAPPDATA%\VoiceEn\hotkey.txt`. |
-| **Copiar última tradução** | Para quando a colagem não pegou na janela. |
+| **Copiar última tradução** | Para quando o texto não chegou na janela. |
+| **Colar com Ctrl+V em vez de digitar** | Usa a área de transferência (e depois devolve o que havia nela). Fica salvo em `%LOCALAPPDATA%\VoiceEn\output.txt`. |
+| **Reiniciar servidor** | Sobe o servidor de tradução de novo, sem fechar o aplicativo. |
 | **Iniciar com o Windows** | Abre o aplicativo no login. |
 | **Sair** | Fecha o aplicativo e o servidor de tradução. |
 
@@ -90,10 +99,10 @@ atalho global ──> VoiceEn.exe (bandeja do Windows)
                     └─ sem chave ou em falha: Whisper local, modelo mantido em memória
                     │  texto em inglês
                     ▼
-                  Ctrl+V na janela em foco
+                  digitado na janela em foco
 ```
 
-- `VoiceEn.cs` — aplicativo de bandeja: atalho global, gravação, aviso na tela, colagem.
+- `VoiceEn.cs` — aplicativo de bandeja: atalho global, gravação, aviso na tela, digitação do texto.
 - `server.py` / `translate.py` — servidor de tradução (nuvem e local) que roda no WSL.
 - `voice-en` + `rec.ps1` — modo alternativo só para terminal (abaixo).
 - `make_icon.py` — desenha o ícone (`uv run --with pillow python make_icon.py`).
@@ -125,9 +134,11 @@ para traduzir.
 ## Solução de problemas
 
 - **"atalho já está em uso"** — outro programa registrou a combinação; troque pelo menu da bandeja.
-- **Nada é colado** — use **Copiar última tradução** no menu e cole com Ctrl+V.
+- **Nada aparece na janela** — use **Copiar última tradução** no menu e cole com Ctrl+V. Janelas
+  abertas como administrador não aceitam teclas de um programa comum.
+- **Ícone cinza e o atalho só diz "iniciando"** — o servidor caiu três vezes seguidas; o log diz o
+  motivo. Apertar o atalho tenta de novo.
 - **Ficou lento de repente** — a nuvem falhou e o plano B local assumiu; o log diz o motivo.
 - **Microfone errado** — a gravação usa o dispositivo de entrada padrão do Windows
   (Configurações → Sistema → Som → Entrada).
-- **Mudou o código do servidor** — feche o aplicativo (**Sair**) e abra de novo; o `server.py` só é
-  recarregado quando o aplicativo inicia.
+- **Mudou o código do servidor** — use **Reiniciar servidor** no menu.

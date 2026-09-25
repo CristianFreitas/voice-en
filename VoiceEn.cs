@@ -104,6 +104,114 @@ namespace VoiceEn
         }
     }
 
+    // Como o texto chega na janela: digitado (padrao) ou colado com Ctrl+V. Salvo em
+    // %LOCALAPPDATA%\VoiceEn\output.txt ("digitar" ou "colar").
+    static class Output
+    {
+        static string FilePath { get { return Path.Combine(Log.Dir, "output.txt"); } }
+
+        public static bool Paste
+        {
+            get
+            {
+                try { return File.ReadAllText(FilePath).Trim() == "colar"; }
+                catch (Exception) { return false; }
+            }
+            set
+            {
+                try { Directory.CreateDirectory(Log.Dir); File.WriteAllText(FilePath, value ? "colar" : "digitar"); }
+                catch (Exception err) { Log.Write("falha ao salvar a saida: " + err.Message); }
+            }
+        }
+    }
+
+    // Teclado sintetico via SendInput: digitar texto (KEYEVENTF_UNICODE) ou mandar Ctrl+V.
+    static class Keyboard
+    {
+        const uint INPUT_KEYBOARD = 1;
+        const uint KEYEVENTF_KEYUP = 0x0002;
+        const uint KEYEVENTF_UNICODE = 0x0004;
+        const ushort VK_CONTROL = 0x11;
+        const ushort VK_V = 0x56;
+        static readonly int[] Modifiers = { 0x10, 0x11, 0x12, 0x5B, 0x5C }; // Shift, Ctrl, Alt, Win esq./dir.
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct MOUSEINPUT { public int dx, dy; public uint mouseData, dwFlags, time; public IntPtr dwExtraInfo; }
+        [StructLayout(LayoutKind.Sequential)]
+        struct KEYBDINPUT { public ushort wVk, wScan; public uint dwFlags, time; public IntPtr dwExtraInfo; }
+        // a uniao precisa do MOUSEINPUT (o maior membro) para o INPUT ter o tamanho que o Windows espera
+        [StructLayout(LayoutKind.Explicit)]
+        struct InputUnion { [FieldOffset(0)] public MOUSEINPUT mi; [FieldOffset(0)] public KEYBDINPUT ki; }
+        [StructLayout(LayoutKind.Sequential)]
+        struct INPUT { public uint type; public InputUnion u; }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern uint SendInput(uint count, INPUT[] inputs, int size);
+        [DllImport("user32.dll")]
+        static extern short GetAsyncKeyState(int vk);
+
+        static INPUT Key(ushort vk, char ch, uint flags)
+        {
+            INPUT input = new INPUT();
+            input.type = INPUT_KEYBOARD;
+            input.u.ki.wVk = vk;
+            input.u.ki.wScan = ch;
+            input.u.ki.dwFlags = flags;
+            return input;
+        }
+
+        static bool Send(INPUT[] inputs)
+        {
+            uint sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+            if (sent == inputs.Length) return true;
+            Log.Write("SendInput enviou " + sent + " de " + inputs.Length + " eventos (erro " + Marshal.GetLastWin32Error() + ")");
+            return false;
+        }
+
+        // Com um atalho como Ctrl+Alt+Espaco e uma traducao rapida, o usuario ainda pode estar com
+        // Ctrl/Alt apertados; o texto digitado viraria uma serie de atalhos na janela.
+        public static void WaitForModifiersUp(int timeoutMs)
+        {
+            Stopwatch clock = Stopwatch.StartNew();
+            while (clock.ElapsedMilliseconds < timeoutMs)
+            {
+                bool down = false;
+                foreach (int vk in Modifiers) down |= (GetAsyncKeyState(vk) & 0x8000) != 0;
+                if (!down) return;
+                Thread.Sleep(20);
+            }
+        }
+
+        // Digitado, o texto nao passa pelo "colar" do programa em foco: o Claude Code, por exemplo, troca
+        // uma colagem de mais de 800 caracteres por "[Pasted text #N]". Os lotes pequenos com pausa evitam
+        // que o terminal entregue tudo num bloco so.
+        public static bool Type(string text)
+        {
+            const int batch = 32;
+            for (int start = 0; start < text.Length; start += batch)
+            {
+                int count = Math.Min(batch, text.Length - start);
+                INPUT[] inputs = new INPUT[count * 2];
+                for (int i = 0; i < count; i++)
+                {
+                    char ch = text[start + i];
+                    inputs[2 * i] = Key(0, ch, KEYEVENTF_UNICODE);
+                    inputs[2 * i + 1] = Key(0, ch, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP);
+                }
+                if (!Send(inputs)) return false;
+                Thread.Sleep(8);
+            }
+            return true;
+        }
+
+        public static bool CtrlV()
+        {
+            return Send(new INPUT[] {
+                Key(VK_CONTROL, '\0', 0), Key(VK_V, '\0', 0),
+                Key(VK_V, '\0', KEYEVENTF_KEYUP), Key(VK_CONTROL, '\0', KEYEVENTF_KEYUP) });
+        }
+    }
+
     // Atalho global escolhido pelo usuario, salvo em %LOCALAPPDATA%\VoiceEn\hotkey.txt (ex.: "Ctrl+Alt+Space").
     class Hotkey
     {
@@ -330,6 +438,8 @@ namespace VoiceEn
         readonly System.Windows.Forms.Timer hideTimer = new System.Windows.Forms.Timer();
         readonly System.Windows.Forms.Timer maxTimer = new System.Windows.Forms.Timer();
         readonly System.Windows.Forms.Timer restoreTimer = new System.Windows.Forms.Timer();
+        readonly System.Windows.Forms.Timer restartTimer = new System.Windows.Forms.Timer();
+        readonly System.Windows.Forms.Timer watchdog = new System.Windows.Forms.Timer();
         readonly Icon iconIdle = MakeIcon(Color.Gray);
         readonly Icon iconReady = MakeIcon(Color.MediumSeaGreen);
         readonly Icon iconRec = MakeIcon(Color.Crimson);
@@ -342,8 +452,13 @@ namespace VoiceEn
         Hotkey hotkey = Hotkey.Load();
         string mode = Mode.Load();
         Process server;
+        DateTime serverStarted;
+        int quickDeaths; // quedas seguidas logo depois de iniciar; na terceira o reinicio automatico para
+        string retryWav; // gravacao que estava sendo traduzida quando o servidor caiu; reenviada uma vez
+        bool retrying;
         State state = State.Idle;
         bool ready;
+        bool announced;
         bool exiting;
         string lastText = "";
         DataObject clipboardBackup;
@@ -371,6 +486,11 @@ namespace VoiceEn
             menu.Items.Add(modeMenu);
             menu.Items.Add("Mudar atalho...", null, delegate { ChangeHotkey(); });
             menu.Items.Add("Copiar ultima traducao", null, delegate { CopyLast(); });
+            ToolStripMenuItem paste = new ToolStripMenuItem("Colar com Ctrl+V em vez de digitar");
+            paste.Checked = Output.Paste;
+            paste.Click += delegate { Output.Paste = !Output.Paste; paste.Checked = Output.Paste; };
+            menu.Items.Add(paste);
+            menu.Items.Add("Reiniciar servidor", null, delegate { if (state != State.Recording) RestartServer("pedido no menu"); });
             ToolStripMenuItem autostart = new ToolStripMenuItem("Iniciar com o Windows");
             autostart.Checked = Autostart.Enabled;
             autostart.Click += delegate { Autostart.Enabled = !Autostart.Enabled; autostart.Checked = Autostart.Enabled; };
@@ -380,10 +500,12 @@ namespace VoiceEn
             tray.Visible = selfTestWav == null;
 
             hideTimer.Tick += delegate { hideTimer.Stop(); overlay.Hide(); };
-            restoreTimer.Interval = 800; // tempo para a janela em foco consumir o Ctrl+V
+            restoreTimer.Interval = 2000; // tempo para a janela em foco ler a area de transferencia depois do Ctrl+V
             restoreTimer.Tick += delegate { restoreTimer.Stop(); RestoreClipboard(); };
             maxTimer.Interval = Config.MaxSeconds * 1000;
             maxTimer.Tick += delegate { if (state == State.Recording) StopRecording(); };
+            restartTimer.Tick += delegate { restartTimer.Stop(); if (!exiting) StartServer(); };
+            watchdog.Tick += delegate { watchdog.Stop(); OnTranslationTimeout(); };
 
             if (selfTestWav == null)
             {
@@ -478,18 +600,31 @@ namespace VoiceEn
             psi.RedirectStandardError = true;
             psi.StandardOutputEncoding = Encoding.UTF8;
             psi.StandardErrorEncoding = Encoding.UTF8;
-            server = Process.Start(psi);
-            Log.Write("servidor iniciado (pid " + server.Id + ")");
+            serverStarted = DateTime.Now;
+            Process p;
+            try { p = Process.Start(psi); }
+            catch (Exception err)
+            {
+                Log.Write("falha ao iniciar o servidor: " + err.Message);
+                OnServerExit();
+                return;
+            }
+            server = p;
+            tray.Icon = iconIdle;
+            tray.Text = "VoiceEn: iniciando o servidor...";
+            Log.Write("servidor iniciado (pid " + p.Id + ")");
 
+            // Cada leitor so fala pelo processo que o criou: depois de um reinicio, o fim do servidor
+            // antigo nao pode derrubar o novo.
             Thread stdout = new Thread(delegate()
             {
                 string line;
-                while ((line = server.StandardOutput.ReadLine()) != null)
+                while ((line = p.StandardOutput.ReadLine()) != null)
                 {
                     string captured = line;
-                    BeginInvoke((MethodInvoker)delegate { OnServerLine(captured); });
+                    BeginInvoke((MethodInvoker)delegate { if (p == server) OnServerLine(captured); });
                 }
-                if (!exiting) BeginInvoke((MethodInvoker)delegate { OnServerExit(); });
+                if (!exiting) BeginInvoke((MethodInvoker)delegate { if (p == server) OnServerExit(); });
             });
             stdout.IsBackground = true;
             stdout.Start();
@@ -497,10 +632,37 @@ namespace VoiceEn
             Thread stderr = new Thread(delegate()
             {
                 string line;
-                while ((line = server.StandardError.ReadLine()) != null) Log.Write("[servidor] " + line);
+                while ((line = p.StandardError.ReadLine()) != null) Log.Write("[servidor] " + line);
             });
             stderr.IsBackground = true;
             stderr.Start();
+        }
+
+        // Mata o servidor atual (se houver) e sobe outro. Uma traducao em andamento e descartada.
+        void RestartServer(string reason)
+        {
+            Log.Write("reiniciando o servidor: " + reason);
+            restartTimer.Stop();
+            watchdog.Stop();
+            Process old = server;
+            server = null;
+            ready = false;
+            if (state == State.Translating) state = State.Idle;
+            if (old != null)
+            {
+                try { if (!old.HasExited) old.Kill(); } catch (Exception) { }
+            }
+            quickDeaths = 0;
+            StartServer();
+        }
+
+        bool ServerAlive
+        {
+            get
+            {
+                try { return server != null && !server.HasExited; }
+                catch (Exception) { return false; }
+            }
         }
 
         void OnServerLine(string line)
@@ -511,13 +673,28 @@ namespace VoiceEn
                 tray.Icon = iconReady;
                 tray.Text = "VoiceEn pronto: " + hotkey;
                 Log.Write("servidor de traducao pronto");
-                if (selfTestWav != null) SendToServer(selfTestWav);
-                else Flash("VoiceEn pronto  -  " + hotkey + " para falar", Color.MediumSeaGreen, 2500);
+                if (selfTestWav != null) { SendToServer(selfTestWav); return; }
+                if (retryWav != null)
+                {
+                    string wav = retryWav;
+                    retryWav = null;
+                    retrying = true;
+                    Log.Write("reenviando a gravacao que estava sendo traduzida");
+                    tray.Icon = iconBusy;
+                    Flash("Traduzindo de novo...", Color.Gold, 0);
+                    SendToServer(wav);
+                    return;
+                }
+                // no reinicio so avisa se havia um aviso de "reiniciando" na tela
+                if (!announced || overlay.Visible) Flash("VoiceEn pronto  -  " + hotkey + " para falar", Color.MediumSeaGreen, 2500);
+                announced = true;
                 return;
             }
             if (state != State.Translating) { Log.Write("linha inesperada: " + line); return; }
 
+            watchdog.Stop();
             state = State.Idle;
+            retrying = false;
             tray.Icon = iconReady;
             string elapsed = (translateClock.ElapsedMilliseconds / 1000.0).ToString("0.0") + "s";
             if (line.StartsWith("OK\t"))
@@ -527,8 +704,8 @@ namespace VoiceEn
                 if (selfTestWav != null) { Quit(); return; }
                 if (text.Length == 0) { Flash("Nenhuma fala detectada", Color.Khaki, 2000); return; }
                 lastText = text;
-                Paste(text);
                 overlay.Hide();
+                Deliver(text);
             }
             else
             {
@@ -538,15 +715,44 @@ namespace VoiceEn
             }
         }
 
+        // O servidor pode cair sozinho (o WSL encerra na suspensao do Windows, num "wsl --shutdown",
+        // numa atualizacao). Antes o app ficava em "carregando" para sempre; agora ele sobe de novo.
         void OnServerExit()
         {
+            bool wasTranslating = state == State.Translating;
+            watchdog.Stop();
             ready = false;
             state = State.Idle;
             tray.Icon = iconIdle;
-            tray.Text = "VoiceEn: servidor parou";
             Log.Write("servidor encerrou inesperadamente");
             if (selfTestWav != null) { Quit(); return; }
-            Flash("VoiceEn: o servidor de traducao parou (veja o log)", Color.Salmon, 5000);
+
+            quickDeaths = (DateTime.Now - serverStarted).TotalSeconds < 30 ? quickDeaths + 1 : 1;
+            if (quickDeaths >= 3)
+            {
+                tray.Text = "VoiceEn: servidor parou";
+                Log.Write("servidor caiu " + quickDeaths + " vezes seguidas; reinicio automatico suspenso");
+                Flash("VoiceEn: o servidor de traducao nao sobe (veja o log); " + hotkey + " tenta de novo", Color.Salmon, 6000);
+                return;
+            }
+            if (wasTranslating && !retrying)
+            {
+                retryWav = wavPath;
+                Flash("O servidor caiu durante a traducao; reiniciando...", Color.Khaki, 0);
+            }
+            tray.Text = "VoiceEn: reiniciando o servidor...";
+            restartTimer.Interval = 1500 * quickDeaths;
+            restartTimer.Start();
+        }
+
+        void OnTranslationTimeout()
+        {
+            if (state != State.Translating) return;
+            Log.Write("traducao sem resposta ha " + (translateClock.ElapsedMilliseconds / 1000) + "s");
+            state = State.Idle;
+            retrying = false;
+            RestartServer("traducao travada");
+            Flash("A traducao travou; servidor reiniciado. Fale de novo", Color.Salmon, 6000);
         }
 
         void SendToServer(string windowsPath)
@@ -555,8 +761,22 @@ namespace VoiceEn
             string linux = "/mnt/" + char.ToLowerInvariant(full[0]) + full.Substring(2).Replace('\\', '/');
             state = State.Translating;
             translateClock = Stopwatch.StartNew();
-            server.StandardInput.WriteLine(mode + "\t" + linux);
-            server.StandardInput.Flush();
+            // folga para a nuvem cair e o modelo local carregar e traduzir (~0,6 s por segundo de audio)
+            double audioSeconds = new FileInfo(full).Length / 32000.0;
+            watchdog.Interval = 60000 + (int)(audioSeconds * 2000);
+            watchdog.Start();
+            try
+            {
+                server.StandardInput.WriteLine(mode + "\t" + linux);
+                server.StandardInput.Flush();
+            }
+            catch (Exception err)
+            {
+                Log.Write("falha ao enviar ao servidor: " + err.Message);
+                if (!retrying) retryWav = full;
+                RestartServer("servidor nao aceitou o pedido");
+                Flash("Reiniciando o servidor de traducao...", Color.Khaki, 0);
+            }
         }
 
         // ---- gravacao (MCI) ----
@@ -573,9 +793,18 @@ namespace VoiceEn
 
         void OnHotkey()
         {
-            if (state == State.Translating) return;
+            if (state == State.Translating) { Flash("Ainda traduzindo, aguarde...", Color.Gold, 0); return; }
             if (state == State.Recording) { StopRecording(); return; }
-            if (!ready) { Flash("VoiceEn ainda carregando o modelo...", Color.Khaki, 2000); return; }
+            if (!ready)
+            {
+                if (!ServerAlive && !restartTimer.Enabled)
+                {
+                    RestartServer("atalho apertado com o servidor parado");
+                    Flash("Reiniciando o servidor de traducao...", Color.Khaki, 3000);
+                }
+                else Flash("VoiceEn ainda iniciando o servidor...", Color.Khaki, 2000);
+                return;
+            }
             StartRecording();
         }
 
@@ -592,6 +821,7 @@ namespace VoiceEn
                 return;
             }
             state = State.Recording;
+            retrying = false;
             tray.Icon = iconRec;
             maxTimer.Start();
             Flash("●  Gravando (" + Mode.Short(mode) + ")...  " + hotkey + " para terminar", Color.Tomato, 0);
@@ -616,6 +846,16 @@ namespace VoiceEn
 
         // ---- saida ----
 
+        void Deliver(string text)
+        {
+            Keyboard.WaitForModifiersUp(3000);
+            if (Output.Paste) { Paste(text); return; }
+            if (Keyboard.Type(text)) return;
+            // SendInput recusado (ex.: tela de bloqueio): deixa o texto pronto para colar
+            try { Clipboard.SetDataObject(text, true, 10, 100); Flash("Nao consegui digitar; texto copiado, cole com Ctrl+V", Color.Khaki, 4000); }
+            catch (Exception) { Flash("Nao consegui digitar; use Copiar ultima traducao", Color.Salmon, 4000); }
+        }
+
         // Cola via area de transferencia e depois devolve o que o usuario tinha copiado antes.
         void Paste(string text)
         {
@@ -627,11 +867,9 @@ namespace VoiceEn
                 Flash("Nao consegui copiar; use Copiar ultima traducao", Color.Salmon, 4000);
                 return;
             }
-            try { SendKeys.SendWait("^v"); }
-            catch (Exception err)
+            if (!Keyboard.CtrlV())
             {
                 clipboardBackup = null;
-                Log.Write("falha ao colar: " + err.Message);
                 Flash("Texto copiado; cole com Ctrl+V", Color.Khaki, 3000);
                 return;
             }
