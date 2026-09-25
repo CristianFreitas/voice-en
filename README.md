@@ -69,6 +69,7 @@ Menu do ícone (botão direito):
 | Opção | O que faz |
 |---|---|
 | **Idioma** | Português → Inglês (tradução, o padrão), Português → Português ou Inglês → Inglês (só transcrição). Fica salvo em `%LOCALAPPDATA%\VoiceEn\mode.txt`. |
+| **Corrigir a fala (PT > EN e PT > PT)** | Desligado por padrão. Tira hesitações ("é...", "tipo", "né") e repetições, conserta palavras mal reconhecidas (ex.: "WCL" → "WSL") e deixa o texto fluente. Veja [Correção da fala](#4-correção-da-fala-opcional). Fica salvo em `%LOCALAPPDATA%\VoiceEn\correct.txt`. |
 | **Mudar atalho...** | Aperte a nova combinação e confirme com Enter. Vale qualquer combinação com Ctrl ou Alt, ou uma tecla de função sozinha (F1–F24). Fica salvo em `%LOCALAPPDATA%\VoiceEn\hotkey.txt`. |
 | **Copiar última tradução** | Para quando o texto não chegou na janela. |
 | **Colar com Ctrl+V em vez de digitar** | Usa a área de transferência (e depois devolve o que havia nela). Fica salvo em `%LOCALAPPDATA%\VoiceEn\output.txt`. |
@@ -76,7 +77,21 @@ Menu do ícone (botão direito):
 | **Iniciar com o Windows** | Abre o aplicativo no login. |
 | **Sair** | Fecha o aplicativo e o servidor de tradução. |
 
-### 4. Conferir qual modo foi usado
+### 4. Correção da fala (opcional)
+
+Com a opção ligada, a fala é transcrita em português (Whisper) e um modelo de texto da Groq
+(`openai/gpt-oss-120b`) a reescreve: sem hesitações, repetições e frases truncadas, com a gramática
+corrigida e, no PT → EN, já traduzida para o inglês. Isso também melhora a tradução, que passa a
+partir do texto inteiro em vez de frase a frase.
+
+- Soma ~0,5–1 s por gravação e manda o texto transcrito à Groq (além do áudio).
+- Exige a chave da Groq; sem ela o texto sai sem correção.
+- Se a correção falhar (sem internet, limite do plano gratuito), o texto sai sem correção, como
+  antes, e o log registra `correcao falhou`.
+- O modelo não responde nem obedece ao que foi ditado: uma pergunta ditada continua pergunta.
+- `VOICE_EN_FIX_MODEL` troca o modelo (ex.: `openai/gpt-oss-20b`, mais rápido e menos fiel).
+
+### 5. Conferir qual modo foi usado
 
 O log em `%LOCALAPPDATA%\VoiceEn\voice-en.log` registra cada tradução e o caminho que ela tomou:
 
@@ -85,7 +100,8 @@ O log em `%LOCALAPPDATA%\VoiceEn\voice-en.log` registra cada tradução e o cami
 traduzido em 0.7s: Refactor the authentication ...
 ```
 
-`groq` é a nuvem; `local` é o modelo na máquina. Uma linha `nuvem falhou (...)` antes de um `local`
+`groq` é a nuvem; `local` é o modelo na máquina; `+correcao` indica que a correção foi aplicada;
+`silencio` indica uma gravação sem fala, que nem é enviada (o Whisper inventa frases com silêncio). Uma linha `nuvem falhou (...)` antes de um `local`
 mostra o motivo do plano B (sem internet, chave inválida, limite do plano gratuito).
 
 ## Como funciona
@@ -109,7 +125,8 @@ atalho global ──> VoiceEn.exe (bandeja do Windows)
 
 ### Privacidade
 
-No modo nuvem, o **áudio de cada gravação é enviado à Groq** para ser traduzido. No modo local nada
+No modo nuvem, o **áudio de cada gravação é enviado à Groq** para ser traduzido. Com a correção da fala
+ligada, o texto transcrito também vai à Groq. No modo local nada
 sai da máquina. Para voltar ao local, apague `~/.config/voice-en/groq-key`.
 
 ### Modo terminal (opcional)
@@ -127,6 +144,7 @@ Variáveis de ambiente lidas por `translate.py`:
 | `VOICE_EN_MODEL` | `medium` | Modelo do Whisper. `small` é ~2x mais rápido e erra mais. |
 | `VOICE_EN_DEVICE` | `cpu` | `cuda` exige as bibliotecas cuBLAS/cuDNN e uma GPU livre. |
 | `VOICE_EN_GROQ_KEY` | — | Alternativa ao arquivo `groq-key`. |
+| `VOICE_EN_FIX_MODEL` | `openai/gpt-oss-120b` | Modelo de texto da Groq usado pela correção da fala. |
 
 Os modelos `turbo` do Whisper não servem aqui, nem local nem na nuvem: eles não foram treinados
 para traduzir.

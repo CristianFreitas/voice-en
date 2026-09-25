@@ -27,6 +27,20 @@ namespace VoiceEn
         public static readonly string Dir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VoiceEn");
 
+        // O log guarda cada texto ditado; acima de 1 MB vira voice-en.old.log (uma geracao so).
+        public static void Rotate()
+        {
+            try
+            {
+                string current = Path.Combine(Dir, "voice-en.log");
+                if (!File.Exists(current) || new FileInfo(current).Length < 1024 * 1024) return;
+                string old = Path.Combine(Dir, "voice-en.old.log");
+                File.Delete(old);
+                File.Move(current, old);
+            }
+            catch (IOException) { }
+        }
+
         public static void Write(string message)
         {
             lock (gate)
@@ -125,6 +139,30 @@ namespace VoiceEn
         }
     }
 
+    // Correcao da fala (desligada por padrao): o servidor tira hesitacoes e repeticoes e conserta
+    // palavras mal reconhecidas. Vale para PT > EN e PT > PT e exige a chave da Groq. Salvo em
+    // %LOCALAPPDATA%\VoiceEn\correct.txt ("sim" ou "nao").
+    static class Correction
+    {
+        static string FilePath { get { return Path.Combine(Log.Dir, "correct.txt"); } }
+
+        public static bool AppliesTo(string mode) { return mode == "pt-en" || mode == "pt-pt"; }
+
+        public static bool Enabled
+        {
+            get
+            {
+                try { return File.ReadAllText(FilePath).Trim() == "sim"; }
+                catch (Exception) { return false; }
+            }
+            set
+            {
+                try { Directory.CreateDirectory(Log.Dir); File.WriteAllText(FilePath, value ? "sim" : "nao"); }
+                catch (Exception err) { Log.Write("falha ao salvar a correcao: " + err.Message); }
+            }
+        }
+    }
+
     // Teclado sintetico via SendInput: digitar texto (KEYEVENTF_UNICODE) ou mandar Ctrl+V.
     static class Keyboard
     {
@@ -185,12 +223,15 @@ namespace VoiceEn
         // Digitado, o texto nao passa pelo "colar" do programa em foco: o Claude Code, por exemplo, troca
         // uma colagem de mais de 800 caracteres por "[Pasted text #N]". Os lotes pequenos com pausa evitam
         // que o terminal entregue tudo num bloco so.
-        public static bool Type(string text)
+        // Devolve quantos caracteres foram digitados (text.Length quando tudo foi).
+        public static int Type(string text)
         {
             const int batch = 32;
-            for (int start = 0; start < text.Length; start += batch)
+            int count;
+            for (int start = 0; start < text.Length; start += count)
             {
-                int count = Math.Min(batch, text.Length - start);
+                count = Math.Min(batch, text.Length - start);
+                if (count < text.Length - start && char.IsHighSurrogate(text[start + count - 1])) count++; // nao parte um emoji
                 INPUT[] inputs = new INPUT[count * 2];
                 for (int i = 0; i < count; i++)
                 {
@@ -198,10 +239,10 @@ namespace VoiceEn
                     inputs[2 * i] = Key(0, ch, KEYEVENTF_UNICODE);
                     inputs[2 * i + 1] = Key(0, ch, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP);
                 }
-                if (!Send(inputs)) return false;
+                if (!Send(inputs)) return start;
                 Thread.Sleep(8);
             }
-            return true;
+            return text.Length;
         }
 
         public static bool CtrlV()
@@ -459,6 +500,7 @@ namespace VoiceEn
         State state = State.Idle;
         bool ready;
         bool announced;
+        bool restartNotice;
         bool exiting;
         string lastText = "";
         DataObject clipboardBackup;
@@ -484,13 +526,24 @@ namespace VoiceEn
                 modeMenu.DropDownItems.Add(item);
             }
             menu.Items.Add(modeMenu);
+            ToolStripMenuItem fix = new ToolStripMenuItem("Corrigir a fala (PT > EN e PT > PT)");
+            fix.Checked = Correction.Enabled;
+            fix.Click += delegate
+            {
+                Correction.Enabled = !Correction.Enabled;
+                fix.Checked = Correction.Enabled;
+                menuHeader.Text = HeaderText();
+                Log.Write("correcao " + (fix.Checked ? "ligada" : "desligada"));
+                Flash("Correcao da fala " + (fix.Checked ? "ligada" : "desligada"), Color.MediumSeaGreen, 2000);
+            };
+            menu.Items.Add(fix);
             menu.Items.Add("Mudar atalho...", null, delegate { ChangeHotkey(); });
             menu.Items.Add("Copiar ultima traducao", null, delegate { CopyLast(); });
             ToolStripMenuItem paste = new ToolStripMenuItem("Colar com Ctrl+V em vez de digitar");
             paste.Checked = Output.Paste;
             paste.Click += delegate { Output.Paste = !Output.Paste; paste.Checked = Output.Paste; };
             menu.Items.Add(paste);
-            menu.Items.Add("Reiniciar servidor", null, delegate { if (state != State.Recording) RestartServer("pedido no menu"); });
+            menu.Items.Add("Reiniciar servidor", null, delegate { if (state != State.Recording) { retryWav = null; RestartServer("pedido no menu"); } });
             ToolStripMenuItem autostart = new ToolStripMenuItem("Iniciar com o Windows");
             autostart.Checked = Autostart.Enabled;
             autostart.Click += delegate { Autostart.Enabled = !Autostart.Enabled; autostart.Checked = Autostart.Enabled; };
@@ -568,7 +621,12 @@ namespace VoiceEn
             return Icon.FromHandle(bmp.GetHicon());
         }
 
-        string HeaderText() { return "VoiceEn  (" + hotkey + ", " + Mode.Short(mode) + ")"; }
+        bool Correcting { get { return Correction.Enabled && Correction.AppliesTo(mode); } }
+
+        string HeaderText()
+        {
+            return "VoiceEn  (" + hotkey + ", " + Mode.Short(mode) + (Correcting ? " + correcao" : "") + ")";
+        }
 
         void ChangeMode(string code, ToolStripMenuItem modeMenu)
         {
@@ -679,6 +737,7 @@ namespace VoiceEn
                     string wav = retryWav;
                     retryWav = null;
                     retrying = true;
+                    restartNotice = false;
                     Log.Write("reenviando a gravacao que estava sendo traduzida");
                     tray.Icon = iconBusy;
                     Flash("Traduzindo de novo...", Color.Gold, 0);
@@ -686,8 +745,10 @@ namespace VoiceEn
                     return;
                 }
                 // no reinicio so avisa se havia um aviso de "reiniciando" na tela
-                if (!announced || overlay.Visible) Flash("VoiceEn pronto  -  " + hotkey + " para falar", Color.MediumSeaGreen, 2500);
+                if (state == State.Recording) return; // o servidor voltou no meio de uma gravacao
+                if (!announced || restartNotice) Flash("VoiceEn pronto  -  " + hotkey + " para falar", Color.MediumSeaGreen, 2500);
                 announced = true;
+                restartNotice = false;
                 return;
             }
             if (state != State.Translating) { Log.Write("linha inesperada: " + line); return; }
@@ -722,8 +783,12 @@ namespace VoiceEn
             bool wasTranslating = state == State.Translating;
             watchdog.Stop();
             ready = false;
-            state = State.Idle;
-            tray.Icon = iconIdle;
+            // uma gravacao em curso continua: ao terminar, ela espera o servidor novo (StopRecording)
+            if (state != State.Recording)
+            {
+                state = State.Idle;
+                tray.Icon = iconIdle;
+            }
             Log.Write("servidor encerrou inesperadamente");
             if (selfTestWav != null) { Quit(); return; }
 
@@ -732,13 +797,23 @@ namespace VoiceEn
             {
                 tray.Text = "VoiceEn: servidor parou";
                 Log.Write("servidor caiu " + quickDeaths + " vezes seguidas; reinicio automatico suspenso");
-                Flash("VoiceEn: o servidor de traducao nao sobe (veja o log); " + hotkey + " tenta de novo", Color.Salmon, 6000);
+                if (retryWav != null) Log.Write("gravacao pendente descartada");
+                retryWav = null;
+                restartNotice = false;
+                if (state != State.Recording) Flash("VoiceEn: o servidor de traducao nao sobe (veja o log); " + hotkey + " tenta de novo", Color.Salmon, 6000);
                 return;
             }
             if (wasTranslating && !retrying)
             {
                 retryWav = wavPath;
-                Flash("O servidor caiu durante a traducao; reiniciando...", Color.Khaki, 0);
+                Notice("O servidor caiu durante a traducao; reiniciando...");
+            }
+            else if (wasTranslating)
+            {
+                Log.Write("servidor caiu de novo no reenvio; gravacao perdida");
+                retrying = false;
+                restartNotice = false;
+                Flash("O servidor caiu de novo; a gravacao se perdeu, fale de novo", Color.Salmon, 6000);
             }
             tray.Text = "VoiceEn: reiniciando o servidor...";
             restartTimer.Interval = 1500 * quickDeaths;
@@ -761,22 +836,32 @@ namespace VoiceEn
             string linux = "/mnt/" + char.ToLowerInvariant(full[0]) + full.Substring(2).Replace('\\', '/');
             state = State.Translating;
             translateClock = Stopwatch.StartNew();
-            // folga para a nuvem cair e o modelo local carregar e traduzir (~0,6 s por segundo de audio)
+            // folga para a nuvem cair (20 s), a correcao falhar (10 s) e a retraducao ou o modelo local
+            // carregar e traduzir (~0,6 s por segundo de audio)
             double audioSeconds = new FileInfo(full).Length / 32000.0;
-            watchdog.Interval = 60000 + (int)(audioSeconds * 2000);
+            watchdog.Interval = 90000 + (int)(audioSeconds * 2000);
             watchdog.Start();
             try
             {
-                server.StandardInput.WriteLine(mode + "\t" + linux);
-                server.StandardInput.Flush();
+                // em bytes UTF-8: o StandardInput do .NET 4 usa a pagina ANSI, e o Python le UTF-8
+                byte[] request = Encoding.UTF8.GetBytes(mode + "\t" + (Correcting ? "corrigir\t" : "") + linux + "\n");
+                server.StandardInput.BaseStream.Write(request, 0, request.Length);
+                server.StandardInput.BaseStream.Flush();
             }
             catch (Exception err)
             {
                 Log.Write("falha ao enviar ao servidor: " + err.Message);
                 if (!retrying) retryWav = full;
                 RestartServer("servidor nao aceitou o pedido");
-                Flash("Reiniciando o servidor de traducao...", Color.Khaki, 0);
+                Notice("Reiniciando o servidor de traducao...");
             }
+        }
+
+        // Aviso que fica na tela ate o servidor novo dizer READY (ai vira "pronto" ou o reenvio).
+        void Notice(string text)
+        {
+            restartNotice = true;
+            Flash(text, Color.Khaki, 0);
         }
 
         // ---- gravacao (MCI) ----
@@ -799,6 +884,7 @@ namespace VoiceEn
             {
                 if (!ServerAlive && !restartTimer.Enabled)
                 {
+                    retryWav = null;
                     RestartServer("atalho apertado com o servidor parado");
                     Flash("Reiniciando o servidor de traducao...", Color.Khaki, 3000);
                 }
@@ -840,7 +926,16 @@ namespace VoiceEn
             if (new FileInfo(wavPath).Length < 16000) { Flash("Gravacao muito curta", Color.Khaki, 1500); return; }
 
             tray.Icon = iconBusy;
-            Flash(mode == "pt-en" ? "Traduzindo para ingles..." : "Transcrevendo...", Color.Gold, 0);
+            if (!ready)
+            {
+                retryWav = wavPath;
+                retrying = false;
+                if (!ServerAlive && !restartTimer.Enabled) RestartServer("gravacao terminada com o servidor parado");
+                Notice("Esperando o servidor de traducao voltar...");
+                return;
+            }
+            string doing = mode == "pt-en" ? "Traduzindo para ingles" : "Transcrevendo";
+            Flash(doing + (Correcting ? " e corrigindo..." : "..."), Color.Gold, 0);
             SendToServer(wavPath);
         }
 
@@ -850,9 +945,10 @@ namespace VoiceEn
         {
             Keyboard.WaitForModifiersUp(3000);
             if (Output.Paste) { Paste(text); return; }
-            if (Keyboard.Type(text)) return;
-            // SendInput recusado (ex.: tela de bloqueio): deixa o texto pronto para colar
-            try { Clipboard.SetDataObject(text, true, 10, 100); Flash("Nao consegui digitar; texto copiado, cole com Ctrl+V", Color.Khaki, 4000); }
+            int typed = Keyboard.Type(text);
+            if (typed == text.Length) return;
+            // SendInput recusado (ex.: tela de bloqueio): deixa o resto do texto pronto para colar
+            try { Clipboard.SetDataObject(text.Substring(typed), true, 10, 100); Flash("Nao consegui digitar; texto copiado, cole com Ctrl+V", Color.Khaki, 4000); }
             catch (Exception) { Flash("Nao consegui digitar; use Copiar ultima traducao", Color.Salmon, 4000); }
         }
 
@@ -982,6 +1078,7 @@ namespace VoiceEn
 
             Application.EnableVisualStyles();
             Application.ThreadException += delegate(object s, ThreadExceptionEventArgs e) { Log.Write("excecao: " + e.Exception); };
+            Log.Rotate();
             Log.Write(selfTest == null ? "iniciando" : "selftest: " + selfTest);
             App app = new App(selfTest);
             Application.Run();
